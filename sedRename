@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import subprocess
+
+def validateFsPath(value):
+  value = os.path.join(os.getcwd(), value)
+  if not os.path.exists(value):
+    msg = 'FS object not found: {0}!'
+    raise argparse.ArgumentTypeError(msg.format(value))
+  return value
+
+def getArgs():
+  parser = argparse.ArgumentParser(
+    description='Renames file using a sed script to derive the new name from'
+    + ' the old.'
+  )
+  parser.add_argument('script'
+  , help='sed script to apply on file sytem object names.'
+  )
+  parser.add_argument('files', type=validateFsPath
+  , metavar='file'
+  , nargs='+'
+  , help='Path of file to be renamed.'
+  )
+  parser.add_argument('--simulate', '-s'
+  , help='Do not actually do anything but only print what would have been done.'
+  , action='store_const'
+  , const=True
+  , default=False
+  )
+  return parser.parse_args()
+
+def joinNamesWithDir(names, folder):
+  return [os.path.join(folder, name) for name in names]
+
+def doRename(folder, oldName, newName):
+  oldPath, newPath = joinNamesWithDir((oldName, newName), folder)
+  print('Renaming "{0}" to "{1}"...'.format(oldName, newName))
+  os.rename(oldPath, newPath)
+
+# noinspection PyUnusedLocal
+def doRenameDummy(folder, oldName, newName):
+  print('Would rename "{0}" to "{1}".'.format(oldName, newName))
+
+def main():
+  print('sed Rename V1.0')
+  print()
+  args = getArgs()
+  if args.simulate:
+    print('Running in simulation mode - not actually doing anything!')
+
+  # Split and sort paths:
+  files = sorted((os.path.dirname(f), os.path.basename(f)) for f in args.files)
+
+  # Pipe old names through sed to get new ones:
+  print('Deriving new names...')
+  namesNew = []
+  pathsNew = [] # For collision check only.
+  lastFolder = None
+  for folder, nameOld in files:
+
+    # Mangle old name by sed script:
+    cmd = ("sed", "-re", args.script)
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE
+    , stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    newNameBytes, errorMsgBytes = process.communicate(nameOld.encode('UTF-8'))
+    result = process.returncode
+    if result != 0:
+      msg = ('sed execution failed with exit code {1} and error message "{2}"'
+      + ' for "{0}"!')
+      print(msg.format(nameOld, result, errorMsgBytes.decode(errors='replace')))
+      exit(1)
+    nameNew = ''
+    try:
+      nameNew = newNameBytes.decode()
+    except ValueError:
+      msg = 'sed execution resulted in invalid UTF-8 string for "{0}": {1}!'
+      print(msg.format(nameOld, newNameBytes))
+      exit(1)
+
+    # Handle noop:
+    if nameNew == nameOld:
+      namesNew.append(None)
+      if folder != lastFolder:
+        print('Folder {0}:'.format(folder))
+        lastFolder = folder
+      msg = 'New name equals old name for "{0}".'
+      print(msg.format(nameOld, folder))
+      continue
+
+    # Detect invalid names:
+    if len(nameNew) == 0:
+      msg = 'sed execution resulted in empty string for "{0}"!'
+      print(msg.format(nameOld))
+      exit(1)
+
+    # Detect name collisions:
+    newPath = os.path.join(folder, nameNew)
+    if newPath in pathsNew:
+      msg = ('New name "{0}" for old name "{1}" collides with new name'
+      + ' for "{2}" in folder "{3}"!')
+      otherIndex = pathsNew.index(newPath)
+      _otherFolder, otherNameOld = files[otherIndex]
+      print(msg.format(nameNew, nameOld, otherNameOld, folder))
+      exit(1)
+    if os.path.exists(newPath):
+      msg = ('New name "{0}" for old name "{1}" collides with other FS object'
+      + ' in folder "{2}"!')
+      print(msg.format(nameNew, nameOld, folder))
+      exit(1)
+
+    namesNew.append(nameNew)
+    pathsNew.append(newPath)
+
+  # Rename files:
+  renameFun = doRenameDummy if args.simulate else doRename
+  lastFolder = None
+  for old, nameNew in zip(files, namesNew):
+    if nameNew is None:
+      continue
+    folder, nameOld = old
+    if folder != lastFolder:
+      print('Folder {0}:'.format(folder))
+      lastFolder = folder
+    renameFun(folder, nameOld, nameNew)
+
+  print('Done.')
+
+if __name__ == '__main__':
+  main()
